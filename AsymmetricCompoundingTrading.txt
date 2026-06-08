@@ -1,0 +1,330 @@
+package com.test;
+import java.util.*;
+
+/**
+ * Asymmetric Compounding Trading Simulator
+ * Based on the strategy described in "Naked Forex" by Nekritin & Peters.
+ *
+ * THE RULE (from the book):
+ *   1. Normal trade  → risk BASE_RISK_PCT of current balance
+ *   2. After a WIN   → next trade risks the *profit from that win* (the asymmetric boost)
+ *                      e.g. if you risked 2% and won 4%, you risk 4% next trade
+ *   3. After boost trade (win or loss) → reset back to BASE_RISK_PCT
+ *
+ * This creates asymmetry: when conditions align (two consecutive wins),
+ * the second win is leveraged on the profit of the first — compounding upside
+ * without permanently increasing base risk.
+ */
+public class AsymmetricCompoundingTrading {
+
+    // ─── User-configurable settings ────────────────────────────────────────
+    static double INITIAL_FUND      = 200.0;  // Starting capital ($)
+    static double WIN_RATE          = 0.55;       // 60% win rate (0.0 – 1.0)
+    static double BASE_RISK_PCT     = 0.02;       // 2% base risk per trade
+    static double REWARD_RISK_RATIO = 2.0;        // 2:1 reward-to-risk
+    static int    TOTAL_TRADES      = 300;
+
+    // ─── Entry point ───────────────────────────────────────────────────────
+    public static void main(String[] args) {
+//        printSettings();
+//
+//        List<Boolean> outcomes = generateTradeOutcomes(WIN_RATE, TOTAL_TRADES);
+//
+//        SimulationResult asymResult = runAsymmetricCompounding(outcomes);
+//        SimulationResult flatResult = runFlatRisk(outcomes);
+//
+//        printResults(asymResult, flatResult);
+//        printEquityCurve(asymResult.equityCurve, 60);
+//        printLastNTrades(asymResult.trades, TOTAL_TRADES);
+    	
+    	
+    	
+
+        List<Boolean> outcomes = generateTradeOutcomes(WIN_RATE, TOTAL_TRADES);
+
+        SimulationResult asymResult = runAsymmetricCompounding(outcomes);
+        SimulationResult flatResult = runFlatRisk(outcomes);
+        
+        printLastNTrades(asymResult.trades, TOTAL_TRADES);
+        printEquityCurve(asymResult.equityCurve, 60);
+        printSettings();
+        printResults(asymResult, flatResult);
+        
+        
+    }
+
+    // ─── Trade outcome generator ────────────────────────────────────────────
+    /**
+     * Produces exactly (winRate * totalTrades) wins, fills the rest as losses,
+     * then shuffles randomly — precise win rate, unpredictable sequence.
+     */
+    public static List<Boolean> generateTradeOutcomes(double winRate, int totalTrades) {
+        int wins   = (int) Math.round(totalTrades * winRate);
+        int losses = totalTrades - wins;
+
+        List<Boolean> outcomes = new ArrayList<>(totalTrades);
+        for (int i = 0; i < wins;   i++) outcomes.add(true);
+        for (int i = 0; i < losses; i++) outcomes.add(false);
+
+        Collections.shuffle(outcomes, new Random());
+        return outcomes;
+    }
+
+    // ─── Asymmetric compounding simulation ─────────────────────────────────
+    /**
+     * Implements the Naked Forex asymmetric compounding rule:
+     *
+     *   - Default state: risk BASE_RISK_PCT of current balance
+     *   - After a WIN: the next trade risks the profit dollar amount from that win
+     *     (i.e. lastWinProfit / currentBalance expressed as a fraction)
+     *   - After the boosted trade (regardless of result): reset to base risk
+     *
+     * Win P&L  = balance * tradeRisk * REWARD_RISK_RATIO
+     * Loss P&L = balance * tradeRisk (subtracted)
+     */
+    public static SimulationResult runAsymmetricCompounding(List<Boolean> outcomes) {
+        double  balance       = INITIAL_FUND;
+        double  peak          = INITIAL_FUND;
+        double  maxDrawdown   = 0.0;
+        boolean boostedNext   = false;
+        double  lastWinProfit = 0.0;
+        int     wins = 0, losses = 0, boostTrades = 0;
+
+        List<TradeRecord> trades      = new ArrayList<>();
+        List<Double>      equityCurve = new ArrayList<>();
+        equityCurve.add(balance);
+
+        for (int i = 0; i < outcomes.size(); i++) {
+            boolean isWin     = outcomes.get(i);
+            boolean isBoosted = boostedNext;
+
+            // Determine risk for this trade
+            double tradeRisk;
+            if (isBoosted) {
+                tradeRisk = lastWinProfit / balance; // profit from last win as % of current balance
+                boostTrades++;
+            } else {
+                tradeRisk = BASE_RISK_PCT;
+            }
+
+            double pnl = isWin
+                ? balance * tradeRisk * REWARD_RISK_RATIO
+                : -balance * tradeRisk;
+
+            balance += pnl;
+
+            if (balance > peak) peak = balance;
+            double drawdown = (peak - balance) / peak * 100.0;
+            if (drawdown > maxDrawdown) maxDrawdown = drawdown;
+
+            if (isWin) {
+                wins++;
+                lastWinProfit = balance * BASE_RISK_PCT * REWARD_RISK_RATIO; // save profit for next boost
+                boostedNext   = true;
+            } else {
+                losses++;
+                boostedNext = false;
+            }
+
+            // Always reset after a boosted trade fires
+            if (isBoosted) boostedNext = false;
+
+            equityCurve.add(balance);
+            trades.add(new TradeRecord(i + 1, isWin, isBoosted, tradeRisk, pnl, balance, drawdown));
+        }
+
+        return new SimulationResult(
+            "Asymmetric Compounding",
+            INITIAL_FUND, balance, peak, maxDrawdown,
+            wins, losses, boostTrades,
+            trades, equityCurve
+        );
+    }
+
+    // ─── Flat risk simulation (for comparison) ─────────────────────────────
+    /**
+     * Standard compounding: always risk BASE_RISK_PCT of current balance.
+     * No asymmetric boost. Runs on the same trade outcomes for a fair comparison.
+     */
+    public static SimulationResult runFlatRisk(List<Boolean> outcomes) {
+        double balance     = INITIAL_FUND;
+        double peak        = INITIAL_FUND;
+        double maxDrawdown = 0.0;
+        int    wins = 0, losses = 0;
+
+        List<TradeRecord> trades      = new ArrayList<>();
+        List<Double>      equityCurve = new ArrayList<>();
+        equityCurve.add(balance);
+
+        for (int i = 0; i < outcomes.size(); i++) {
+            boolean isWin = outcomes.get(i);
+            double  pnl   = isWin
+                ? balance * BASE_RISK_PCT * REWARD_RISK_RATIO
+                : -balance * BASE_RISK_PCT;
+
+            balance += pnl;
+            if (balance > peak) peak = balance;
+            double drawdown = (peak - balance) / peak * 100.0;
+            if (drawdown > maxDrawdown) maxDrawdown = drawdown;
+            if (isWin) wins++; else losses++;
+
+            equityCurve.add(balance);
+            trades.add(new TradeRecord(i + 1, isWin, false, BASE_RISK_PCT, pnl, balance, drawdown));
+        }
+
+        return new SimulationResult(
+            "Flat Risk (baseline)",
+            INITIAL_FUND, balance, peak, maxDrawdown,
+            wins, losses, 0,
+            trades, equityCurve
+        );
+    }
+
+    // ─── Output helpers ─────────────────────────────────────────────────────
+
+    static void printSettings() {
+        System.out.println("=".repeat(60));
+        System.out.println("  ASYMMETRIC COMPOUNDING — Naked Forex Strategy");
+        System.out.println("=".repeat(60));
+        System.out.printf("  Initial fund       : $%,.2f%n", INITIAL_FUND);
+        System.out.printf("  Win rate           : %.0f%%%n", WIN_RATE * 100);
+        System.out.printf("  Base risk/trade    : %.1f%% of current balance%n", BASE_RISK_PCT * 100);
+        System.out.printf("  Reward : Risk      : %.1f : 1%n", REWARD_RISK_RATIO);
+        System.out.printf("  Total trades       : %d%n", TOTAL_TRADES);
+        System.out.println();
+        System.out.println("  RULE:");
+        System.out.printf("    Normal trade  → risk %.1f%% → win = +%.1f%% of balance%n",
+            BASE_RISK_PCT * 100, BASE_RISK_PCT * REWARD_RISK_RATIO * 100);
+        System.out.printf("    After a WIN   → next trade risks the profit (%.1f%%) → win = +%.1f%% of balance%n",
+            BASE_RISK_PCT * REWARD_RISK_RATIO * 100,
+            BASE_RISK_PCT * REWARD_RISK_RATIO * REWARD_RISK_RATIO * 100);
+        System.out.println("    After boost   → always reset to base risk");
+        System.out.println("=".repeat(60));
+        System.out.println();
+    }
+
+    static void printResults(SimulationResult asym, SimulationResult flat) {
+        double asymReturn = (asym.finalBalance - asym.initialFund) / asym.initialFund * 100.0;
+        double flatReturn = (flat.finalBalance - flat.initialFund) / flat.initialFund * 100.0;
+        double extraGain  = asym.finalBalance - flat.finalBalance;
+
+        System.out.println("── COMPARISON: ASYMMETRIC vs FLAT RISK ───────────────────────");
+        System.out.printf("  %-24s  %-24s  %s%n", "Metric", "Asymmetric", "Flat (baseline)");
+        System.out.println("  " + "-".repeat(62));
+        System.out.printf("  %-24s  $%,-22.2f  $%,.2f%n",
+            "Final balance", asym.finalBalance, flat.finalBalance);
+        System.out.printf("  %-24s  %+.2f%%%n",
+            "Total return (asym)", asymReturn);
+        System.out.printf("  %-24s  %+.2f%%%n",
+            "Total return (flat)", flatReturn);
+        System.out.printf("  %-24s  $%,-22.2f  $%,.2f%n",
+            "Peak balance", asym.peakBalance, flat.peakBalance);
+        System.out.printf("  %-24s  %.2f%%%n",
+            "Max drawdown (asym)", asym.maxDrawdown);
+        System.out.printf("  %-24s  %.2f%%%n",
+            "Max drawdown (flat)", flat.maxDrawdown);
+        System.out.printf("  %-24s  %d%n",
+            "Boosted trades fired", asym.boostTrades);
+        System.out.println();
+        System.out.printf("  Extra gain from asymmetric: %+,.2f%n", extraGain);
+        System.out.println();
+    }
+
+    static void printEquityCurve(List<Double> curve, int width) {
+        int    height = 12;
+        double minVal = curve.stream().mapToDouble(d -> d).min().orElse(0);
+        double maxVal = curve.stream().mapToDouble(d -> d).max().orElse(1);
+        double range  = maxVal - minVal == 0 ? 1 : maxVal - minVal;
+        int    step   = Math.max(1, curve.size() / width);
+
+        List<Double> sampled = new ArrayList<>();
+        for (int i = 0; i < curve.size(); i += step) sampled.add(curve.get(i));
+
+        System.out.println("── EQUITY CURVE (asymmetric compounding) ──────────────────────");
+        System.out.printf("  $%,.0f ┐%n", maxVal);
+        for (int row = height - 1; row >= 0; row--) {
+            StringBuilder line = new StringBuilder("         │");
+            for (Double val : sampled) {
+                int bar = (int) ((val - minVal) / range * (height - 1));
+                line.append(bar == row ? "█" : " ");
+            }
+            System.out.println(line);
+        }
+        System.out.printf("  $%,.0f └%s%n", minVal, "─".repeat(sampled.size()));
+        System.out.printf("          0%s300 trades%n", " ".repeat(Math.max(0, sampled.size() - 11)));
+        System.out.println();
+    }
+
+    static void printLastNTrades(List<TradeRecord> trades, int n) {
+        int start = Math.max(0, trades.size() - n);
+        System.out.printf("── LAST %d TRADES ──────────────────────────────────────────────%n", n);
+        System.out.printf("  %-6s %-9s %-6s %8s %12s %15s%n",
+            "Trade", "Mode", "Result", "Risk%", "P&L ($)", "Balance ($)");
+        System.out.println("  " + "-".repeat(62));
+        for (int i = start; i < trades.size(); i++) {
+            TradeRecord t = trades.get(i);
+            System.out.printf("  %-6d %-9s %-6s %7.2f%% %+12.2f %15.2f%n",
+                t.tradeNumber,
+                t.isBoosted ? "[BOOSTED]" : "base",
+                t.isWin ? "WIN" : "LOSS",
+                t.riskPct * 100,
+                t.pnl,
+                t.balanceAfter);
+        }
+        System.out.println();
+    }
+
+    // ─── Data classes ────────────────────────────────────────────────────────
+
+    /** Record for a single trade — captures whether it was a boosted (asymmetric) trade. */
+    static class TradeRecord {
+        final int     tradeNumber;
+        final boolean isWin;
+        final boolean isBoosted;     // true = this was an asymmetric boosted trade
+        final double  riskPct;       // actual risk fraction used (base or boosted)
+        final double  pnl;
+        final double  balanceAfter;
+        final double  drawdown;
+
+        TradeRecord(int tradeNumber, boolean isWin, boolean isBoosted,
+                    double riskPct, double pnl, double balanceAfter, double drawdown) {
+            this.tradeNumber  = tradeNumber;
+            this.isWin        = isWin;
+            this.isBoosted    = isBoosted;
+            this.riskPct      = riskPct;
+            this.pnl          = pnl;
+            this.balanceAfter = balanceAfter;
+            this.drawdown     = drawdown;
+        }
+    }
+
+    /** Aggregated result for a full simulation run. */
+    static class SimulationResult {
+        final String           label;
+        final double           initialFund;
+        final double           finalBalance;
+        final double           peakBalance;
+        final double           maxDrawdown;
+        final int              wins;
+        final int              losses;
+        final int              boostTrades;   // how many asymmetric boosts fired
+        final List<TradeRecord> trades;
+        final List<Double>     equityCurve;
+
+        SimulationResult(String label, double initialFund, double finalBalance,
+                         double peakBalance, double maxDrawdown,
+                         int wins, int losses, int boostTrades,
+                         List<TradeRecord> trades, List<Double> equityCurve) {
+            this.label        = label;
+            this.initialFund  = initialFund;
+            this.finalBalance = finalBalance;
+            this.peakBalance  = peakBalance;
+            this.maxDrawdown  = maxDrawdown;
+            this.wins         = wins;
+            this.losses       = losses;
+            this.boostTrades  = boostTrades;
+            this.trades       = trades;
+            this.equityCurve  = equityCurve;
+        }
+    }
+}
